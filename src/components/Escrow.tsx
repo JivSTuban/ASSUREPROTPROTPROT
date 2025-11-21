@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '../context/WalletContext'
 import { useDevice } from '../context/DeviceContext'
@@ -81,6 +81,9 @@ export default function Escrow() {
     return tomorrow.toISOString().split('T')[0]
   })
   const [showExtensionModal, setShowExtensionModal] = useState(false)
+  const [showAddFundsModal, setShowAddFundsModal] = useState(false)
+  const [addFundsBuyerAmount, setAddFundsBuyerAmount] = useState('')
+  const [addFundsSellerAmount, setAddFundsSellerAmount] = useState('')
   
   // Seller wallet balance - read directly from localStorage
   const [sellerWalletBalance, setSellerWalletBalance] = useState<number>(() => {
@@ -93,6 +96,15 @@ export default function Escrow() {
     const stored = localStorage.getItem('wallet_balance_buyer')
     return stored ? parseFloat(stored) : 10000.00
   })
+  
+  // Force render trigger for seller balance updates
+  const [, forceUpdate] = useState(0)
+  
+  // Memoized formatted seller balance to ensure re-render on change
+  const formattedSellerBalance = useMemo(() => {
+    console.log('🔢 Formatting seller balance:', sellerWalletBalance)
+    return sellerWalletBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })
+  }, [sellerWalletBalance])
   
   // Determine if current user is buyer (has inviteLink) or seller (connected via invite)
   const isBuyer = !!inviteLink
@@ -303,41 +315,18 @@ export default function Escrow() {
             setDeviceType('seller')
           }
           
-          // Check if amount is already on hold
+          // Check if amount is already on hold (from approval)
           if (payload.sellerAmountOnHold) {
             setSellerAmountOnHold(true)
-          } else {
-            // Hold amount from seller's wallet
-            const sellerWalletKey = 'wallet_balance_seller'
-            const currentSellerBalance = localStorage.getItem(sellerWalletKey)
-            const sellerBalance = currentSellerBalance ? parseFloat(currentSellerBalance) : 5000.00
-            
-            if (sellerBalance >= SELLER_HOLD_AMOUNT) {
-              const newSellerBalance = sellerBalance - SELLER_HOLD_AMOUNT
-              localStorage.setItem(sellerWalletKey, newSellerBalance.toString())
-              setSellerWalletBalance(newSellerBalance)
-              lastBalanceRef.current = newSellerBalance
-              setSellerAmountOnHold(true)
-              
-              // Update payload to mark hold
-              payload.sellerAmountOnHold = true
-              localStorage.setItem(transactionKey, JSON.stringify(payload))
-              
-              // Dispatch custom event
-              window.dispatchEvent(new CustomEvent('localStorageChange', {
-                detail: { key: sellerWalletKey, newValue: newSellerBalance.toString() }
-              }))
-            } else {
-              handleStatus({ type: 'error', message: `Insufficient balance. You need at least ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} to be held.` })
-              window.history.replaceState({}, document.title, window.location.pathname)
-              return
-            }
           }
+          
+          // Note: The ₱100 security deposit will be deducted when seller clicks "Approve" button
+          // No deduction happens here during URL connection
           
           setInvitePayload(payload)
           setActiveTransaction(payload)
           setConnected(true)
-          handleStatus({ type: 'success', message: 'Transaction ID received! Waiting for buyer to send money to escrow wallet.' })
+          handleStatus({ type: 'success', message: 'Transaction ID received! Please approve the transaction from your pending list.' })
           // Clean URL
           window.history.replaceState({}, document.title, window.location.pathname)
         } else {
@@ -365,41 +354,18 @@ export default function Escrow() {
               setDeviceType('seller')
             }
             
-            // Check if amount is already on hold
+            // Check if amount is already on hold (from approval)
             if (payload.sellerAmountOnHold) {
               setSellerAmountOnHold(true)
-            } else {
-              // Hold amount from seller's wallet
-              const sellerWalletKey = 'wallet_balance_seller'
-              const currentSellerBalance = localStorage.getItem(sellerWalletKey)
-              const sellerBalance = currentSellerBalance ? parseFloat(currentSellerBalance) : 5000.00
-              
-              if (sellerBalance >= SELLER_HOLD_AMOUNT) {
-                const newSellerBalance = sellerBalance - SELLER_HOLD_AMOUNT
-                localStorage.setItem(sellerWalletKey, newSellerBalance.toString())
-                setSellerWalletBalance(newSellerBalance)
-                lastBalanceRef.current = newSellerBalance
-                setSellerAmountOnHold(true)
-                
-                // Update payload to mark hold
-                payload.sellerAmountOnHold = true
-                localStorage.setItem(transactionKey, JSON.stringify(payload))
-                
-                // Dispatch custom event
-                window.dispatchEvent(new CustomEvent('localStorageChange', {
-                  detail: { key: sellerWalletKey, newValue: newSellerBalance.toString() }
-                }))
-              } else {
-                handleStatus({ type: 'error', message: `Insufficient balance. You need at least ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} to be held.` })
-                window.history.replaceState({}, document.title, window.location.pathname)
-                return
-              }
             }
+            
+            // Note: The ₱100 security deposit will be deducted when seller clicks "Approve" button
+            // No deduction happens here during URL connection
             
             setInvitePayload(payload)
             setActiveTransaction(payload)
             setConnected(true)
-            handleStatus({ type: 'success', message: 'Transaction ID received! Waiting for buyer to send money to escrow wallet.' })
+            handleStatus({ type: 'success', message: 'Transaction ID received! Please approve the transaction from your pending list.' })
             window.history.replaceState({}, document.title, window.location.pathname)
           } catch {
             handleStatus({ type: 'error', message: 'Invalid transaction ID.' })
@@ -611,22 +577,26 @@ export default function Escrow() {
       payload.sellerApproved = true
       payload.sellerConnected = true
       
-      // Deduct transaction fee from buyer's wallet
-      const buyerWalletKey = 'wallet_balance_buyer'
-      const currentBuyerBalance = localStorage.getItem(buyerWalletKey)
-      const buyerBalance = currentBuyerBalance ? parseFloat(currentBuyerBalance) : 10000.00
+      // Deduct ₱100 security deposit from seller's wallet (will be returned when transaction completes)
+      const sellerWalletKey = 'wallet_balance_seller'
+      const currentSellerBalance = localStorage.getItem(sellerWalletKey)
+      const sellerBalance = currentSellerBalance ? parseFloat(currentSellerBalance) : 5000.00
       
-      if (buyerBalance >= TRANSACTION_FEE) {
-        const newBuyerBalance = buyerBalance - TRANSACTION_FEE
-        localStorage.setItem(buyerWalletKey, newBuyerBalance.toString())
-        setBuyerWalletBalance(newBuyerBalance)
+      if (sellerBalance >= SELLER_HOLD_AMOUNT) {
+        const newSellerBalance = sellerBalance - SELLER_HOLD_AMOUNT
+        localStorage.setItem(sellerWalletKey, newSellerBalance.toString())
+        setSellerWalletBalance(newSellerBalance)
+        
+        // Mark that seller amount is on hold
+        payload.sellerAmountOnHold = true
         
         // Dispatch custom event to notify other components
         window.dispatchEvent(new CustomEvent('localStorageChange', {
-          detail: { key: buyerWalletKey, newValue: newBuyerBalance.toString() }
+          detail: { key: sellerWalletKey, newValue: newSellerBalance.toString() }
         }))
       } else {
-        handleStatus({ type: 'error', message: 'Buyer has insufficient balance for transaction fee.' })
+        handleStatus({ type: 'error', message: `Insufficient balance. You need at least ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} security deposit.` })
+        loadPendingTransactions()
         return
       }
       
@@ -639,7 +609,7 @@ export default function Escrow() {
       // Remove from pending list
       loadPendingTransactions()
       
-      handleStatus({ type: 'success', message: 'Transaction approved and connected! ₱100 transaction fee deducted from buyer.' })
+      handleStatus({ type: 'success', message: `Transaction approved! ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} security deposit held. Buyer can now send money to escrow.` })
     } catch (error) {
       handleStatus({ type: 'error', message: 'Failed to approve transaction.' })
       loadPendingTransactions()
@@ -684,32 +654,13 @@ export default function Escrow() {
     setActiveTransaction(payload)
     setConnected(true)
     
-    // Hold amount from seller's wallet
-    const sellerWalletKey = 'wallet_balance_seller'
-    const currentSellerBalance = localStorage.getItem(sellerWalletKey)
-    const sellerBalance = currentSellerBalance ? parseFloat(currentSellerBalance) : 5000.00
-    
-    if (sellerBalance >= SELLER_HOLD_AMOUNT) {
-      const newSellerBalance = sellerBalance - SELLER_HOLD_AMOUNT
-      localStorage.setItem(sellerWalletKey, newSellerBalance.toString())
-      setSellerWalletBalance(newSellerBalance)
-      // Note: lastBalanceRef will be updated by the useEffect that watches localStorage
+    // Check if seller amount is already on hold (from approval)
+    if (payload.sellerAmountOnHold) {
       setSellerAmountOnHold(true)
-      
-      // Update payload to mark hold
-      payload.sellerAmountOnHold = true
-      const transactionKey = `txn_${payload.buyerId}`
-      localStorage.setItem(transactionKey, JSON.stringify(payload))
-      
-      // Dispatch custom event
-      window.dispatchEvent(new CustomEvent('localStorageChange', {
-        detail: { key: sellerWalletKey, newValue: newSellerBalance.toString() }
-      }))
-    } else {
-      handleStatus({ type: 'error', message: `Insufficient balance. You need at least ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} to be held.` })
-      setConnected(false)
-      return
     }
+    
+    // Note: The ₱100 security deposit is deducted when seller clicks "Approve" button
+    // in handleSellerApprove function, not here
   }
 
   // Check if amount is held in escrow (from seller's perspective)
@@ -796,34 +747,38 @@ export default function Escrow() {
             
             if (!alreadyCredited) {
               // The wallet should already be updated in localStorage by handleTransferToSeller
-              // Just update the state and wallet context here
+              // Just update the state here
               const sellerWalletKey = 'wallet_balance_seller'
               const currentSellerBalance = localStorage.getItem(sellerWalletKey)
               const sellerBalance = currentSellerBalance ? parseFloat(currentSellerBalance) : 5000.00
-              
-              // Update sellerWalletBalance state
-              lastBalanceRef.current = sellerBalance
-              setSellerWalletBalance(sellerBalance)
-              
-              // Dispatch custom event to notify listeners of localStorage change
-              window.dispatchEvent(new CustomEvent('localStorageChange', {
-                detail: { key: sellerWalletKey, newValue: sellerBalance.toString() }
-              }))
               
               // Ensure device type is set to seller
               if (deviceType !== 'seller') {
                 setDeviceType('seller')
               }
               
-              // Also update through the wallet context (amount + released hold)
-              addBalance(activeTransaction.amount + SELLER_HOLD_AMOUNT)
+              // Update sellerWalletBalance state using functional update
+              lastBalanceRef.current = sellerBalance
+              setSellerWalletBalance(() => sellerBalance)
               setSellerAmountOnHold(false)
               localStorage.setItem(creditedKey, 'true')
               setTransferCompleted(true)
-              handleStatus({ 
-                type: 'success', 
-                message: `Transaction completed! ₱${activeTransaction.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} has been added to your wallet. ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold released.` 
-              })
+              
+              // Force a re-render to ensure UI updates
+              forceUpdate(prev => prev + 1)
+              
+              // Dispatch custom event to notify listeners of localStorage change
+              window.dispatchEvent(new CustomEvent('localStorageChange', {
+                detail: { key: sellerWalletKey, newValue: sellerBalance.toString() }
+              }))
+              
+              // Delay status message to ensure state updates are processed
+              setTimeout(() => {
+                handleStatus({ 
+                  type: 'success', 
+                  message: `Transaction completed! ₱${activeTransaction.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} has been added to your wallet. ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold released.` 
+                })
+              }, 100)
             } else {
               // Already credited, just update the state from localStorage
               const sellerWalletKey = 'wallet_balance_seller'
@@ -831,7 +786,7 @@ export default function Escrow() {
               if (currentSellerBalance) {
                 const balance = parseFloat(currentSellerBalance)
                 lastBalanceRef.current = balance
-                setSellerWalletBalance(balance)
+                setSellerWalletBalance(() => balance)
               }
               setTransferCompleted(true)
             }
@@ -841,13 +796,15 @@ export default function Escrow() {
             const currentSellerBalance = localStorage.getItem(sellerWalletKey)
             if (currentSellerBalance) {
               const balance = parseFloat(currentSellerBalance)
-              // Always update to ensure state is in sync with localStorage
-              lastBalanceRef.current = balance
-              setSellerWalletBalance(balance)
-              // Dispatch custom event to notify listeners
-              window.dispatchEvent(new CustomEvent('localStorageChange', {
-                detail: { key: sellerWalletKey, newValue: balance.toString() }
-              }))
+              // Only update if value changed to prevent unnecessary re-renders
+              if (balance !== lastBalanceRef.current) {
+                lastBalanceRef.current = balance
+                setSellerWalletBalance(() => balance)
+                // Dispatch custom event to notify listeners
+                window.dispatchEvent(new CustomEvent('localStorageChange', {
+                  detail: { key: sellerWalletKey, newValue: balance.toString() }
+                }))
+              }
             }
           }
         }
@@ -857,7 +814,7 @@ export default function Escrow() {
       checkCompletedTransaction()
       
       // Poll periodically to catch completed transactions
-      const interval = setInterval(checkCompletedTransaction, 1000)
+      const interval = setInterval(checkCompletedTransaction, 500)
       return () => clearInterval(interval)
     }
   }, [connected, activeTransaction, isSeller, deviceType, transferCompleted, addBalance, setDeviceType])
@@ -893,6 +850,8 @@ export default function Escrow() {
       return
     }
     
+    console.log('🔵 Seller confirming transaction:', activeTransaction.buyerId)
+    
     setSellerConfirmed(true)
     
     // Save seller confirmation to localStorage
@@ -908,7 +867,21 @@ export default function Escrow() {
     
     // Both confirmed, transfer to seller
     // This will update the wallet balance and the state will be updated immediately
+    console.log('💸 Triggering transfer to seller...')
     handleTransferToSeller()
+    
+    // Force an immediate balance update check
+    setTimeout(() => {
+      const sellerWalletKey = 'wallet_balance_seller'
+      const currentBalance = localStorage.getItem(sellerWalletKey)
+      if (currentBalance) {
+        const balance = parseFloat(currentBalance)
+        console.log('🔄 Force updating balance from localStorage:', balance)
+        lastBalanceRef.current = balance
+        setSellerWalletBalance(() => balance)
+        forceUpdate(prev => prev + 1)
+      }
+    }, 50)
   }
 
   // Helper function to get minimum extension date (current expiry + 1 day)
@@ -1095,6 +1068,49 @@ export default function Escrow() {
     handleStatus({ type: 'success', message: `Extension approved! Protection window extended by ${days}d ${hours}h.` })
   }
 
+  // Add funds to buyer wallet
+  function handleAddFundsToBuyer() {
+    const amount = parseFloat(addFundsBuyerAmount)
+    if (!isNaN(amount) && amount > 0) {
+      const currentBalance = parseFloat(localStorage.getItem('wallet_balance_buyer') || '10000')
+      const newBalance = currentBalance + amount
+      localStorage.setItem('wallet_balance_buyer', newBalance.toString())
+      setBuyerWalletBalance(newBalance)
+      
+      // Dispatch custom event to notify other components
+      window.dispatchEvent(new CustomEvent('localStorageChange', {
+        detail: { key: 'wallet_balance_buyer', newValue: newBalance.toString() }
+      }))
+      
+      setAddFundsBuyerAmount('')
+      handleStatus({ type: 'success', message: `Added ₱${amount.toFixed(2)} to Buyer wallet. New balance: ₱${newBalance.toFixed(2)}` })
+    } else {
+      handleStatus({ type: 'error', message: 'Please enter a valid amount.' })
+    }
+  }
+
+  // Add funds to seller wallet
+  function handleAddFundsToSeller() {
+    const amount = parseFloat(addFundsSellerAmount)
+    if (!isNaN(amount) && amount > 0) {
+      const currentBalance = parseFloat(localStorage.getItem('wallet_balance_seller') || '5000')
+      const newBalance = currentBalance + amount
+      localStorage.setItem('wallet_balance_seller', newBalance.toString())
+      setSellerWalletBalance(newBalance)
+      lastBalanceRef.current = newBalance
+      
+      // Dispatch custom event to notify other components
+      window.dispatchEvent(new CustomEvent('localStorageChange', {
+        detail: { key: 'wallet_balance_seller', newValue: newBalance.toString() }
+      }))
+      
+      setAddFundsSellerAmount('')
+      handleStatus({ type: 'success', message: `Added ₱${amount.toFixed(2)} to Seller wallet. New balance: ₱${newBalance.toFixed(2)}` })
+    } else {
+      handleStatus({ type: 'error', message: 'Please enter a valid amount.' })
+    }
+  }
+
   // Clear transaction data from localStorage (except wallet values)
   function clearTransactionData(transactionId: string) {
     // List of wallet keys to preserve
@@ -1246,30 +1262,47 @@ export default function Escrow() {
         localStorage.setItem(transactionKey, JSON.stringify(payload))
       }
       
-      // Dispatch custom event to notify listeners of localStorage change
-      window.dispatchEvent(new CustomEvent('localStorageChange', {
-        detail: { key: sellerWalletKey, newValue: newSellerBalance.toString() }
-      }))
-      
       // Update sellerWalletBalance state immediately if we're on the seller's device
       if (isSeller && connected) {
+        console.log('💰 Updating seller balance:', {
+          oldBalance: sellerBalance,
+          newBalance: newSellerBalance,
+          transactionAmount: activeTransaction.amount,
+          holdAmount: SELLER_HOLD_AMOUNT
+        })
+        
         // Ensure device type is set to seller for wallet context update
         if (deviceType !== 'seller') {
           setDeviceType('seller')
         }
-        // Update state synchronously to ensure immediate UI update
+        
         // Update ref first, then state to ensure consistency
         lastBalanceRef.current = newSellerBalance
-        // Force state update - always set to new value to ensure UI updates
-        setSellerWalletBalance(newSellerBalance)
-        // Also update through the wallet context
-        addBalance(activeTransaction.amount + SELLER_HOLD_AMOUNT)
+        
+        // Update all related states in sequence
+        setSellerWalletBalance(() => {
+          console.log('✅ Setting seller wallet balance to:', newSellerBalance)
+          return newSellerBalance
+        })
         setSellerAmountOnHold(false)
         setTransferCompleted(true)
-        handleStatus({ 
-          type: 'success', 
-          message: `Transaction completed! ₱${activeTransaction.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} has been added to your wallet. ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold released.` 
+        
+        // Force multiple re-renders to ensure UI updates
+        forceUpdate(prev => prev + 1)
+        
+        // Additional force update after a microtask to ensure React processes the change
+        Promise.resolve().then(() => {
+          forceUpdate(prev => prev + 1)
         })
+        
+        // Show success message after state updates
+        setTimeout(() => {
+          console.log('📢 Showing success message. Current balance:', newSellerBalance)
+          handleStatus({ 
+            type: 'success', 
+            message: `Transaction completed! ₱${activeTransaction.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} has been added to your wallet. ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold released.` 
+          })
+        }, 100)
       } else if (isBuyer) {
         // Buyer sees transfer completed message
         handleStatus({ 
@@ -1277,6 +1310,11 @@ export default function Escrow() {
           message: `Transfer completed! ₱${activeTransaction.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} has been transferred to the seller.` 
         })
       }
+      
+      // Dispatch custom event to notify listeners of localStorage change AFTER state updates
+      window.dispatchEvent(new CustomEvent('localStorageChange', {
+        detail: { key: sellerWalletKey, newValue: newSellerBalance.toString() }
+      }))
     } else {
       // Already credited, but ensure state is updated if on seller's device
       if (isSeller && connected) {
@@ -1285,8 +1323,9 @@ export default function Escrow() {
         if (currentSellerBalance) {
           const balance = parseFloat(currentSellerBalance)
           lastBalanceRef.current = balance
-          setSellerWalletBalance(balance)
+          setSellerWalletBalance(() => balance)
         }
+        setTransferCompleted(true)
       }
     }
     
@@ -1405,6 +1444,14 @@ export default function Escrow() {
           setDeviceType('buyer')
         }
         addBalance(transaction.amount + TRANSACTION_FEE)
+        
+        // Show buyer refund message
+        if (isBuyer) {
+          handleStatus({ 
+            type: 'success', 
+            message: `Protection Window Expired - Funds Refunded: ₱${payload.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} and transaction fee of ₱${TRANSACTION_FEE.toLocaleString(undefined, { minimumFractionDigits: 2 })} have been returned to your wallet.` 
+          })
+        }
       }
 
       // If seller has amount on hold, it stays deducted (already deducted when seller connected)
@@ -1413,12 +1460,20 @@ export default function Escrow() {
         payload.holdReleased = false
         payload.sellerAmountOnHold = false
         localStorage.setItem(transactionKey, JSON.stringify(payload))
+        
+        // Show seller transaction failed message
+        if (isSeller) {
+          handleStatus({ 
+            type: 'error', 
+            message: `Transaction Failed - Protection Window Expired: ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold amount has been deducted from your wallet.` 
+          })
+        }
       }
     }
 
     // Update active transaction state
     setActiveTransaction(payload)
-    setTransferCompleted(true)
+    // Don't set transferCompleted for expired transactions - it should only be for successful transfers
     
     // Clear transaction data from localStorage after a short delay to ensure wallet updates are complete
     setTimeout(() => {
@@ -1453,22 +1508,9 @@ export default function Escrow() {
 
       const payload = JSON.parse(storedData)
       
-      // If already expired or completed, just update state
+      // If already expired, just update state without showing messages again
       if (payload.expired && !activeTransaction.expired) {
         setActiveTransaction(payload)
-        setTransferCompleted(true)
-        if (isBuyer && payload.amountHeldInEscrow && !payload.completed) {
-          handleStatus({ 
-            type: 'success', 
-            message: `Protection window expired. ₱${payload.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} and transaction fee of ₱${TRANSACTION_FEE.toLocaleString(undefined, { minimumFractionDigits: 2 })} have been returned to your wallet.` 
-          })
-        }
-        if (isSeller && payload.sellerAmountOnHold && !payload.holdReleased) {
-          handleStatus({ 
-            type: 'error', 
-            message: `Protection window expired. ₱${SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold amount has been deducted from your wallet.` 
-          })
-        }
         return
       }
 
@@ -1513,7 +1555,10 @@ export default function Escrow() {
           // Only update if value actually changed
           if (newBalance !== lastBalanceRef.current) {
             lastBalanceRef.current = newBalance
-            setSellerWalletBalance(newBalance)
+            // Use functional update to ensure React processes the change
+            setSellerWalletBalance(() => newBalance)
+            // Force a re-render
+            forceUpdate(prev => prev + 1)
           }
         }
       }
@@ -1527,7 +1572,8 @@ export default function Escrow() {
           const newBalance = parseFloat(e.newValue)
           if (newBalance !== lastBalanceRef.current) {
             lastBalanceRef.current = newBalance
-            setSellerWalletBalance(newBalance)
+            setSellerWalletBalance(() => newBalance)
+            forceUpdate(prev => prev + 1)
           }
         }
       }
@@ -1539,7 +1585,8 @@ export default function Escrow() {
           const newBalance = parseFloat(customEvent.detail.newValue)
           // Always update state when custom event is fired to ensure UI syncs
           lastBalanceRef.current = newBalance
-          setSellerWalletBalance(newBalance)
+          setSellerWalletBalance(() => newBalance)
+          forceUpdate(prev => prev + 1)
         } else if (customEvent.detail?.key === 'wallet_balance_seller') {
           // Fallback to reading from localStorage
           updateSellerBalance()
@@ -1549,8 +1596,9 @@ export default function Escrow() {
       window.addEventListener('storage', handleStorageChange)
       window.addEventListener('localStorageChange', handleCustomStorageChange as EventListener)
       
-      // Poll localStorage for same-tab updates (only updates if value changed)
-      const interval = setInterval(updateSellerBalance, 100)
+      // Poll localStorage for same-tab updates more frequently during active transactions
+      const pollInterval = connected && activeTransaction ? 200 : 500
+      const interval = setInterval(updateSellerBalance, pollInterval)
       
       return () => {
         window.removeEventListener('storage', handleStorageChange)
@@ -1558,7 +1606,23 @@ export default function Escrow() {
         clearInterval(interval)
       }
     }
-  }, [isSeller, deviceType])
+  }, [isSeller, deviceType, connected, activeTransaction])
+
+  // Force update seller balance when transaction completes
+  useEffect(() => {
+    if (transferCompleted && isSeller) {
+      console.log('🎉 Transaction completed! Force updating seller balance...')
+      const sellerWalletKey = 'wallet_balance_seller'
+      const currentBalance = localStorage.getItem(sellerWalletKey)
+      if (currentBalance) {
+        const balance = parseFloat(currentBalance)
+        console.log('💵 Final balance from localStorage:', balance)
+        lastBalanceRef.current = balance
+        setSellerWalletBalance(() => balance)
+        forceUpdate(prev => prev + 1)
+      }
+    }
+  }, [transferCompleted, isSeller])
 
   // Ref to track last buyer balance value to prevent unnecessary updates
   const lastBuyerBalanceRef = useRef<number>(buyerWalletBalance)
@@ -1626,20 +1690,57 @@ export default function Escrow() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#E6F0FF] via-[#F9FAFB] to-[#FFFFFF] text-[#1A1A1A] relative">
-      {/* Action buttons - positioned outside main container */}
-      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+      {/* Dev Tools Panel - positioned outside main container */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-3">
+        {/* Dev Tools Header */}
+        <div className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-2 shadow-lg">
+          <div className="flex items-center gap-2">
+            <svg className="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+            <span className="text-xs font-bold text-white uppercase tracking-wide">Dev Tools</span>
+          </div>
+        </div>
+
+        {/* Add Funds Button */}
+        <button
+          onClick={() => setShowAddFundsModal(true)}
+          className="group relative rounded-xl border-2 border-[#10B981] bg-white p-3 text-[#10B981] shadow-lg transition-all hover:bg-[#10B981] hover:scale-105 hover:shadow-xl active:scale-95"
+          title="Add funds to buyer or seller wallet"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6 transition-colors group-hover:text-white"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+            />
+          </svg>
+          <span className="absolute -left-2 top-1/2 -translate-y-1/2 -translate-x-full whitespace-nowrap rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 pointer-events-none">
+            Add funds to wallets
+          </span>
+        </button>
+
+        {/* Skip Protection Window Button */}
         <button
           onClick={skipProtectionWindow}
-          className="rounded-xl border border-[#F59E0B] bg-white p-2.5 text-[#F59E0B] shadow-lg transition hover:bg-[#FEF3C7] hover:border-[#D97706]"
+          className="group relative rounded-xl border-2 border-[#F59E0B] bg-white p-3 text-[#F59E0B] shadow-lg transition-all hover:bg-[#F59E0B] hover:scale-105 hover:shadow-xl active:scale-95"
           title="Skip protection window to 5 seconds before expiration"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
+            className="h-6 w-6 transition-colors group-hover:text-white"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
-            strokeWidth={2}
+            strokeWidth={2.5}
           >
             <path
               strokeLinecap="round"
@@ -1647,19 +1748,24 @@ export default function Escrow() {
               d="M13 10V3L4 14h7v7l9-11h-7z"
             />
           </svg>
+          <span className="absolute -left-2 top-1/2 -translate-y-1/2 -translate-x-full whitespace-nowrap rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 pointer-events-none">
+            Skip to 5s before expiry
+          </span>
         </button>
+
+        {/* Clear All Transactions Button */}
         <button
           onClick={clearAllTransactions}
-          className="rounded-xl border border-[#EF4444] bg-white p-2.5 text-[#EF4444] shadow-lg transition hover:bg-[#FEE2E2] hover:border-[#DC2626]"
+          className="group relative rounded-xl border-2 border-[#EF4444] bg-white p-3 text-[#EF4444] shadow-lg transition-all hover:bg-[#EF4444] hover:scale-105 hover:shadow-xl active:scale-95"
           title="Clear all transaction data from localStorage"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
+            className="h-6 w-6 transition-colors group-hover:text-white"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
-            strokeWidth={2}
+            strokeWidth={2.5}
           >
             <path
               strokeLinecap="round"
@@ -1667,7 +1773,17 @@ export default function Escrow() {
               d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
             />
           </svg>
+          <span className="absolute -left-2 top-1/2 -translate-y-1/2 -translate-x-full whitespace-nowrap rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 pointer-events-none">
+            Clear all transactions
+          </span>
         </button>
+
+        {/* Info Badge */}
+        <div className="rounded-lg bg-white/90 backdrop-blur-sm px-2 py-1 shadow-md border border-gray-200">
+          <p className="text-[9px] font-medium text-gray-600 text-center">
+            Dev Mode
+          </p>
+        </div>
       </div>
 
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-6">
@@ -1676,9 +1792,7 @@ export default function Escrow() {
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium tracking-wide text-[#666666]">GAssure Escrow</span>
               <h1 className="text-3xl font-semibold text-[#1A1A1A]">Transaction System</h1>
-              <p className="text-sm text-[#333333]">
-                Create transactions and connect with sellers through transaction IDs.
-              </p>
+              
             </div>
             <button
               onClick={() => navigate('/')}
@@ -1983,10 +2097,12 @@ export default function Escrow() {
                   </div>
                   
                   {activeTransaction.expired && !transferCompleted && (
-                    <div className="mt-3 rounded-xl bg-[#FEE2E2] border border-[#EF4444]/30 p-3">
-                      <p className="text-xs font-semibold text-[#B91C1C]">Protection Window Expired</p>
-                      <p className="mt-1 text-xs text-[#991B1B]">
-                        Funds and transaction fee have been returned to your wallet.
+                    <div className="mt-3 rounded-xl bg-[#EF4444] border border-[#DC2626] p-3">
+                      <p className="text-sm font-semibold text-white">
+                        ✗ Protection Window Expired - Funds Refunded
+                      </p>
+                      <p className="mt-1 text-xs text-white/90">
+                        ₱{activeTransaction.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} and transaction fee of ₱{TRANSACTION_FEE.toLocaleString(undefined, { minimumFractionDigits: 2 })} have been returned to your wallet.
                       </p>
                     </div>
                   )}
@@ -2069,11 +2185,7 @@ export default function Escrow() {
                 </div>
               )}
 
-              {activeTransaction && !sellerConnected && (
-                <div className="rounded-2xl border border-[#E5E7EB] bg-[#F9FAFB] p-4">
-                  <p className="text-sm text-[#666666]">Waiting for seller to approve the transaction...</p>
-                </div>
-              )}
+              
             </section>
 
             {/* Seller Section */}
@@ -2082,7 +2194,7 @@ export default function Escrow() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#666666]">Seller</p>
-                  <h2 className="text-2xl font-semibold text-[#1A1A1A]">Connect to Transaction</h2>
+                 
                 </div>
                 <span className="rounded-full bg-[#E6F0FF] px-3 py-1 text-xs font-semibold text-[#0066FF]">Device B</span>
               </div>
@@ -2093,10 +2205,11 @@ export default function Escrow() {
                   <div>
                     <p className="text-xs font-medium text-[#666666]">Wallet Balance</p>
                     <p
+                      key={`seller-balance-${sellerWalletBalance}`}
                       className="text-xl font-bold text-[#1A1A1A]"
                       style={{ fontFamily: '"Gotham Rounded", "Karla", sans-serif' }}
                     >
-                      ₱{sellerWalletBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      ₱{formattedSellerBalance}
                     </p>
                   </div>
                   <div>
@@ -2239,10 +2352,12 @@ export default function Escrow() {
                   </div>
                   
                   {activeTransaction.expired && !transferCompleted && (
-                    <div className="mt-3 rounded-xl bg-[#FEE2E2] border border-[#EF4444]/30 p-3">
-                      <p className="text-xs font-semibold text-[#B91C1C]">Protection Window Expired</p>
-                      <p className="mt-1 text-xs text-[#991B1B]">
-                        Your hold amount has been deducted. Funds have been returned to buyer.
+                    <div className="mt-3 rounded-xl bg-[#EF4444] border border-[#DC2626] p-3">
+                      <p className="text-sm font-semibold text-white">
+                        ✗ Transaction Failed - Protection Window Expired
+                      </p>
+                      <p className="mt-1 text-xs text-white/90">
+                        ₱{SELLER_HOLD_AMOUNT.toLocaleString(undefined, { minimumFractionDigits: 2 })} hold amount has been deducted from your wallet.
                       </p>
                     </div>
                   )}
@@ -2459,6 +2574,145 @@ export default function Escrow() {
           </div>
         </main>
       </div>
+
+      {/* Add Funds Modal */}
+      {showAddFundsModal && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setShowAddFundsModal(false)}
+        >
+          <div 
+            className="w-full max-w-md rounded-2xl border border-[#E5E7EB] bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-6 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[#10B981] to-[#059669] shadow-md">
+                  <svg className="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-[#1A1A1A]">Add Funds</h3>
+              </div>
+              <button
+                onClick={() => setShowAddFundsModal(false)}
+                className="rounded-lg p-1 text-[#666666] transition hover:bg-[#F9FAFB]"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Buyer Wallet Section */}
+              <div className="rounded-xl border-2 border-blue-200 bg-blue-50/50 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100">
+                    <svg className="h-5 w-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-blue-700">Buyer Wallet</p>
+                    <p className="text-xs text-gray-600">
+                      Current: ₱{buyerWalletBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={addFundsBuyerAmount}
+                    onChange={(e) => setAddFundsBuyerAmount(e.target.value)}
+                    placeholder="Enter amount"
+                    className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    step="0.01"
+                    min="0"
+                  />
+                  <button
+                    onClick={handleAddFundsToBuyer}
+                    disabled={!addFundsBuyerAmount || parseFloat(addFundsBuyerAmount) <= 0}
+                    className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shadow-sm"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                    </svg>
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Seller Wallet Section */}
+              <div className="rounded-xl border-2 border-green-200 bg-green-50/50 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-100">
+                    <svg className="h-5 w-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-green-700">Seller Wallet</p>
+                    <p className="text-xs text-gray-600">
+                      Current: ₱{sellerWalletBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={addFundsSellerAmount}
+                    onChange={(e) => setAddFundsSellerAmount(e.target.value)}
+                    placeholder="Enter amount"
+                    className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-500/20"
+                    step="0.01"
+                    min="0"
+                  />
+                  <button
+                    onClick={handleAddFundsToSeller}
+                    disabled={!addFundsSellerAmount || parseFloat(addFundsSellerAmount) <= 0}
+                    className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shadow-sm"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                    </svg>
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Info */}
+              <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 p-3">
+                <svg className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
+                </svg>
+                <p className="text-xs text-amber-800">
+                  <span className="font-semibold">Development only:</span> Add funds to buyer or seller wallets for testing. Changes are saved to localStorage.
+                </p>
+              </div>
+
+              {/* Close Button */}
+              <button
+                onClick={() => setShowAddFundsModal(false)}
+                className="w-full rounded-xl border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-semibold text-[#333333] transition hover:bg-[#F9FAFB]"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
